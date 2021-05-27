@@ -268,7 +268,6 @@ func (api *apiClient) gatherLayers(namespace, repo string, repoPath string, tag 
 	if (infoV1 == "" || infoV2 == "") && len(manifests) == 0 {
 		return false
 	}
-	api.tpl.Set("sha256", sha256)
 
 	// check if manifest has sha256 valid string
 	created := gjson.Get(gjson.Get(infoV1, "history.0.v1Compatibility").String(), "created").String()
@@ -276,6 +275,7 @@ func (api *apiClient) gatherLayers(namespace, repo string, repoPath string, tag 
 	if len(manifests) > 0 {
 		sha256 = sha256list
 	}
+	api.tpl.Set("sha256", sha256)
 	api.tpl.Set("isDigest", isDigest)
 	api.tpl.Set("created", created)
 
