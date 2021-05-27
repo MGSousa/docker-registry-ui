@@ -3,13 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"net/url"
-	"os"
-	"strings"
-
 	"github.com/CloudyKit/jet"
+	"github.com/jinzhu/configor"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/quiq/docker-registry-ui/events"
@@ -17,51 +12,57 @@ import (
 	"github.com/robfig/cron"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
-	"gopkg.in/yaml.v2"
+	"io/ioutil"
+	"log"
+	"net/http"
+	"net/url"
+	"os"
+	"strings"
+	"time"
 )
 
-type configData struct {
-	ListenAddr            string   `yaml:"listen_addr"`
-	BasePath              string   `yaml:"base_path"`
-	RegistryURL           string   `yaml:"registry_url"`
-	VerifyTLS             bool     `yaml:"verify_tls"`
-	Username              string   `yaml:"registry_username"`
-	Password              string   `yaml:"registry_password"`
-	PasswordFile          string   `yaml:"registry_password_file"`
-	EventListenerToken    string   `yaml:"event_listener_token"`
-	EventRetentionDays    int      `yaml:"event_retention_days"`
-	EventDatabaseDriver   string   `yaml:"event_database_driver"`
-	EventDatabaseLocation string   `yaml:"event_database_location"`
-	EventDeletionEnabled  bool     `yaml:"event_deletion_enabled"`
-	CacheRefreshInterval  uint8    `yaml:"cache_refresh_interval"`
-	AnyoneCanDelete       bool     `yaml:"anyone_can_delete"`
-	Admins                []string `yaml:"admins"`
-	Debug                 bool     `yaml:"debug"`
-	PurgeTagsKeepDays     int      `yaml:"purge_tags_keep_days"`
-	PurgeTagsKeepCount    int      `yaml:"purge_tags_keep_count"`
-	PurgeTagsSchedule     string   `yaml:"purge_tags_schedule"`
-}
+type (
+	configData struct {
+		ListenAddr            string   `yaml:"listen_addr"`
+		BasePath              string   `yaml:"base_path"`
+		RegistryURL           string   `yaml:"registry_url"`
+		VerifyTLS             bool     `yaml:"verify_tls"`
+		Username              string   `yaml:"registry_username"`
+		Password              string   `yaml:"registry_password"`
+		PasswordFile          string   `yaml:"registry_password_file"`
+		EventListenerToken    string   `yaml:"event_listener_token"`
+		EventRetentionDays    int      `yaml:"event_retention_days"`
+		EventDatabaseDriver   string   `yaml:"event_database_driver"`
+		EventDatabaseLocation string   `yaml:"event_database_location"`
+		EventDeletionEnabled  bool     `yaml:"event_deletion_enabled"`
+		CacheRefreshInterval  uint8    `yaml:"cache_refresh_interval"`
+		AnyoneCanDelete       bool     `yaml:"anyone_can_delete"`
+		Admins                []string `yaml:"admins"`
+		Debug                 bool     `yaml:"debug"`
+		PurgeTagsKeepDays     int      `yaml:"purge_tags_keep_days"`
+		PurgeTagsKeepCount    int      `yaml:"purge_tags_keep_count"`
+		PurgeTagsSchedule     string   `yaml:"purge_tags_schedule"`
+	}
+	apiClient struct {
+		client        *registry.Client
+		eventListener *events.EventListener
+		config        configData
+	}
+)
 
-type template struct {
-	View *jet.Set
-}
+var (
+	api apiClient
+	u   *url.URL
+	err error
 
-type apiClient struct {
-	client        *registry.Client
-	eventListener *events.EventListener
-	config        configData
-}
+	configFile, loggingLevel string
+	purgeTags, purgeDryRun   bool
+)
 
 func main() {
-	var (
-		a apiClient
-
-		configFile, loggingLevel string
-		purgeTags, purgeDryRun   bool
-	)
 	flag.StringVar(&configFile, "config-file", "config.yml", "path to the config file")
 	flag.StringVar(&loggingLevel, "log-level", "info", "logging level")
-	flag.BoolVar(&purgeTags, "purge-tags", false, "purge old tags instead of running a web server")
+	flag.BoolVar(&purgeTags, "purge-tags", false, "purge old tags instead of running api web server")
 	flag.BoolVar(&purgeDryRun, "dry-run", false, "dry-run for purging task, does not delete anything")
 	flag.Parse()
 
@@ -70,123 +71,143 @@ func main() {
 			logrus.SetLevel(level)
 		}
 	}
+	// parse config file
+	api.parseConfig()
 
-	// Read config file.
+	// Init registry API client.
+	if api.client = registry.NewClient(
+		api.config.RegistryURL, api.config.VerifyTLS, api.config.Username, api.config.Password); api.client == nil {
+		log.Fatal("cannot initialize API Client or unsupported Auth method")
+	}
+	// execute initial tasks
+	api.execInitialTasks()
+
+	if api.config.EventDatabaseDriver != "sqlite3" && api.config.EventDatabaseDriver != "mysql" {
+		log.Fatal("event_database_driver should be either sqlite3 or mysql")
+	}
+	api.eventListener = events.NewEventListener(
+		api.config.EventDatabaseDriver, api.config.EventDatabaseLocation, api.config.EventRetentionDays, api.config.EventDeletionEnabled,
+	)
+	// init Template and Web engines
+	api.initEngine()
+}
+
+// parseConfig read and parse config file and respective opts
+func (api *apiClient) parseConfig() {
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		panic(err)
+		log.Fatal(err)
 	}
-	bytes, err := ioutil.ReadFile(configFile)
-	if err != nil {
-		panic(err)
-	}
-	if err := yaml.Unmarshal(bytes, &a.config); err != nil {
-		panic(err)
-	}
+	_ = configor.New(
+		&configor.Config{
+			AutoReload:         true,
+			AutoReloadInterval: time.Second,
+			AutoReloadCallback: func(c interface{}) {
+				if os.Getenv("APP_RELEASE") != "true" {
+					log.Println("Config auto-reloaded")
+				}
+			},
+		},
+	).Load(&api.config, configFile)
+
 	// Validate registry URL.
-	u, err := url.Parse(a.config.RegistryURL)
-	if err != nil {
-		panic(err)
+	if u, err = url.Parse(api.config.RegistryURL); err != nil {
+		log.Fatal(err)
 	}
+
 	// Normalize base path.
-	if a.config.BasePath != "" {
-		if !strings.HasPrefix(a.config.BasePath, "/") {
-			a.config.BasePath = "/" + a.config.BasePath
+	if api.config.BasePath != "" {
+		if !strings.HasPrefix(api.config.BasePath, "/") {
+			api.config.BasePath = "/" + api.config.BasePath
 		}
-		if strings.HasSuffix(a.config.BasePath, "/") {
-			a.config.BasePath = a.config.BasePath[0 : len(a.config.BasePath)-1]
+		if strings.HasSuffix(api.config.BasePath, "/") {
+			api.config.BasePath = api.config.BasePath[0 : len(api.config.BasePath)-1]
 		}
 	}
 	// Read password from file.
-	if a.config.PasswordFile != "" {
-		if _, err := os.Stat(a.config.PasswordFile); os.IsNotExist(err) {
+	if api.config.PasswordFile != "" {
+		if _, err := os.Stat(api.config.PasswordFile); os.IsNotExist(err) {
 			panic(err)
 		}
-		passwordBytes, err := ioutil.ReadFile(a.config.PasswordFile)
+		passwordBytes, err := ioutil.ReadFile(api.config.PasswordFile)
 		if err != nil {
 			panic(err)
 		}
-		a.config.Password = strings.TrimSuffix(string(passwordBytes[:]), "\n")
+		api.config.Password = strings.TrimSuffix(string(passwordBytes[:]), "\n")
 	}
+}
 
-	// Init registry API client.
-	a.client = registry.NewClient(a.config.RegistryURL, a.config.VerifyTLS, a.config.Username, a.config.Password)
-	if a.client == nil {
-		panic(fmt.Errorf("cannot initialize api client or unsupported auth method"))
-	}
-
+// execInitialTasks execute or schedules initial tasks
+func (api *apiClient) execInitialTasks() {
 	// Execute CLI task and exit.
 	if purgeTags {
-		a.purgeOldTags(purgeDryRun)
+		api.purgeOldTags(purgeDryRun)
 		return
 	}
 	// Schedules to purge tags.
-	if a.config.PurgeTagsSchedule != "" {
+	if api.config.PurgeTagsSchedule != "" {
 		c := cron.New()
 		task := func() {
-			a.purgeOldTags(purgeDryRun)
+			api.purgeOldTags(purgeDryRun)
 		}
-		if err := c.AddFunc(a.config.PurgeTagsSchedule, task); err != nil {
-			panic(fmt.Errorf("Invalid schedule format: %s", a.config.PurgeTagsSchedule))
+		if err := c.AddFunc(api.config.PurgeTagsSchedule, task); err != nil {
+			log.Fatalf("Invalid schedule format: %s", api.config.PurgeTagsSchedule)
 		}
 		c.Start()
 	}
-
 	// Count tags in background.
-	go a.client.CountTags(a.config.CacheRefreshInterval)
-
-	if a.config.EventDatabaseDriver != "sqlite3" && a.config.EventDatabaseDriver != "mysql" {
-		panic(fmt.Errorf("event_database_driver should be either sqlite3 or mysql"))
-	}
-	a.eventListener = events.NewEventListener(
-		a.config.EventDatabaseDriver, a.config.EventDatabaseLocation, a.config.EventRetentionDays, a.config.EventDeletionEnabled,
-	)
-
-	// Template engine init.
-	e := echo.New()
-	e.Renderer = setupRenderer(a.config.Debug, u.Host, a.config.BasePath)
-
-	// Web routes.
-	e.File("/favicon.ico", "static/favicon.ico")
-	e.Static(a.config.BasePath+"/static", "static")
-	if a.config.BasePath != "" {
-		e.GET(a.config.BasePath, a.viewRepositories)
-	}
-	e.GET(a.config.BasePath+"/", a.viewRepositories)
-	e.GET(a.config.BasePath+"/:namespace", a.viewRepositories)
-	e.GET(a.config.BasePath+"/:namespace/:repo", a.viewTags)
-	e.GET(a.config.BasePath+"/:namespace/:repo/:tag", a.viewTagInfo)
-	e.GET(a.config.BasePath+"/:namespace/:repo/:tag/delete", a.deleteTag)
-	e.GET(a.config.BasePath+"/events", a.viewLog)
-
-	// Protected event listener.
-	p := e.Group(a.config.BasePath + "/api")
-	p.Use(middleware.KeyAuthWithConfig(middleware.KeyAuthConfig{
-		Validator: middleware.KeyAuthValidator(func(token string, c echo.Context) (bool, error) {
-			return token == a.config.EventListenerToken, nil
-		}),
-	}))
-	p.POST("/events", a.receiveEvents)
-
-	e.Logger.Fatal(e.Start(a.config.ListenAddr))
+	go api.client.CountTags(api.config.CacheRefreshInterval)
 }
 
-func (a *apiClient) viewRepositories(c echo.Context) error {
+// initEngine initiate template and web engines
+func (api *apiClient) initEngine() {
+	// init template engine
+	e := echo.New()
+	e.Renderer = setupRenderer(api.config.Debug, u.Host, api.config.BasePath)
+
+	// init web engine routes
+	e.File("/favicon.ico", "static/favicon.ico")
+	e.Static(api.config.BasePath+"/static", "static")
+	if api.config.BasePath != "" {
+		e.GET(api.config.BasePath, api.viewRepositories)
+	}
+	e.GET(api.config.BasePath+"/", api.viewRepositories)
+	e.GET(api.config.BasePath+"/:namespace", api.viewRepositories)
+	e.GET(api.config.BasePath+"/:namespace/:repo", api.viewTags)
+	e.GET(api.config.BasePath+"/:namespace/:repo/:tag", api.viewTagInfo)
+	e.GET(api.config.BasePath+"/:namespace/:repo/:tag/delete", api.deleteTag)
+	e.GET(api.config.BasePath+"/events", api.viewLog)
+
+	// protected event listener
+	p := e.Group(api.config.BasePath + "/api")
+	p.Use(middleware.KeyAuthWithConfig(middleware.KeyAuthConfig{
+		Validator: func(token string, c echo.Context) (bool, error) {
+			return token == api.config.EventListenerToken, nil
+		},
+	}))
+	p.POST("/events", api.receiveEvents)
+
+	e.Logger.Fatal(e.Start(api.config.ListenAddr))
+}
+
+// viewRepositories
+func (api *apiClient) viewRepositories(c echo.Context) error {
 	namespace := c.Param("namespace")
 	if namespace == "" {
 		namespace = "library"
 	}
 
-	repos, _ := a.client.Repositories(true)[namespace]
+	repos, _ := api.client.Repositories(true)[namespace]
 	data := jet.VarMap{}
 	data.Set("namespace", namespace)
-	data.Set("namespaces", a.client.Namespaces())
+	data.Set("namespaces", api.client.Namespaces())
 	data.Set("repos", repos)
-	data.Set("tagCounts", a.client.TagCounts())
+	data.Set("tagCounts", api.client.TagCounts())
 
 	return c.Render(http.StatusOK, "repositories.html", data)
 }
 
-func (a *apiClient) viewTags(c echo.Context) error {
+// viewTags
+func (api *apiClient) viewTags(c echo.Context) error {
 	namespace := c.Param("namespace")
 	repo := c.Param("repo")
 	repoPath := repo
@@ -194,8 +215,8 @@ func (a *apiClient) viewTags(c echo.Context) error {
 		repoPath = fmt.Sprintf("%s/%s", namespace, repo)
 	}
 
-	tags := a.client.Tags(repoPath)
-	deleteAllowed := a.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER"))
+	tags := api.client.Tags(repoPath)
+	deleteAllowed := api.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER"))
 
 	data := jet.VarMap{}
 	data.Set("namespace", namespace)
@@ -203,12 +224,13 @@ func (a *apiClient) viewTags(c echo.Context) error {
 	data.Set("tags", tags)
 	data.Set("deleteAllowed", deleteAllowed)
 	repoPath, _ = url.PathUnescape(repoPath)
-	data.Set("events", a.eventListener.GetEvents(repoPath))
+	data.Set("events", api.eventListener.GetEvents(repoPath))
 
 	return c.Render(http.StatusOK, "tags.html", data)
 }
 
-func (a *apiClient) viewTagInfo(c echo.Context) error {
+// viewTagInfo view all available info from each tag
+func (api *apiClient) viewTagInfo(c echo.Context) error {
 	namespace := c.Param("namespace")
 	repo := c.Param("repo")
 	tag := c.Param("tag")
@@ -218,12 +240,13 @@ func (a *apiClient) viewTagInfo(c echo.Context) error {
 	}
 
 	// Retrieve full image info from various versions of manifests
-	sha256, infoV1, infoV2 := a.client.TagInfo(repoPath, tag, false)
-	sha256list, manifests := a.client.ManifestList(repoPath, tag)
+	sha256, infoV1, infoV2 := api.client.TagInfo(repoPath, tag, false)
+	sha256list, manifests := api.client.ManifestList(repoPath, tag)
 	if (infoV1 == "" || infoV2 == "") && len(manifests) == 0 {
-		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", a.config.BasePath, namespace, repo))
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", api.config.BasePath, namespace, repo))
 	}
 
+	// check if manifest has sha256 valid string
 	created := gjson.Get(gjson.Get(infoV1, "history.0.v1Compatibility").String(), "created").String()
 	isDigest := strings.HasPrefix(tag, "sha256:")
 	if len(manifests) > 0 {
@@ -269,7 +292,7 @@ func (a *apiClient) viewTagInfo(c echo.Context) error {
 		r, _ := gjson.Parse(s.String()).Value().(map[string]interface{})
 		if s.Get("mediaType").String() == "application/vnd.docker.distribution.manifest.v2+json" {
 			// Sub-image of the specific arch.
-			_, dInfoV1, _ := a.client.TagInfo(repoPath, s.Get("digest").String(), true)
+			_, dInfoV1, _ := api.client.TagInfo(repoPath, s.Get("digest").String(), true)
 			var dSize int64
 			for _, d := range gjson.Get(dInfoV1, "layers.#.size").Array() {
 				dSize = dSize + d.Int()
@@ -277,7 +300,7 @@ func (a *apiClient) viewTagInfo(c echo.Context) error {
 			r["size"] = dSize
 			// Create link here because there is a bug with jet template when referencing a value by map key in the "if" condition under "range".
 			if r["mediaType"] == "application/vnd.docker.distribution.manifest.v2+json" {
-				r["digest"] = fmt.Sprintf(`<a href="%s/%s/%s/%s">%s</a>`, a.config.BasePath, namespace, repo, r["digest"], r["digest"])
+				r["digest"] = fmt.Sprintf(`<a href="%s/%s/%s/%s">%s</a>`, api.config.BasePath, namespace, repo, r["digest"], r["digest"])
 			}
 		} else {
 			// Sub-image of the cache type.
@@ -305,7 +328,8 @@ func (a *apiClient) viewTagInfo(c echo.Context) error {
 	return c.Render(http.StatusOK, "tag_info.html", data)
 }
 
-func (a *apiClient) deleteTag(c echo.Context) error {
+// deleteTag delete desited tag
+func (api *apiClient) deleteTag(c echo.Context) error {
 	namespace := c.Param("namespace")
 	repo := c.Param("repo")
 	tag := c.Param("tag")
@@ -314,18 +338,18 @@ func (a *apiClient) deleteTag(c echo.Context) error {
 		repoPath = fmt.Sprintf("%s/%s", namespace, repo)
 	}
 
-	if a.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER")) {
-		a.client.DeleteTag(repoPath, tag)
+	if api.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER")) {
+		api.client.DeleteTag(repoPath, tag)
 	}
 
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", a.config.BasePath, namespace, repo))
+	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", api.config.BasePath, namespace, repo))
 }
 
 // checkDeletePermission check if tag deletion is allowed whether by anyone or permitted users.
-func (a *apiClient) checkDeletePermission(user string) bool {
-	deleteAllowed := a.config.AnyoneCanDelete
+func (api *apiClient) checkDeletePermission(user string) bool {
+	deleteAllowed := api.config.AnyoneCanDelete
 	if !deleteAllowed {
-		for _, u := range a.config.Admins {
+		for _, u := range api.config.Admins {
 			if u == user {
 				deleteAllowed = true
 				break
@@ -336,20 +360,20 @@ func (a *apiClient) checkDeletePermission(user string) bool {
 }
 
 // viewLog view events from sqlite.
-func (a *apiClient) viewLog(c echo.Context) error {
+func (api *apiClient) viewLog(c echo.Context) error {
 	data := jet.VarMap{}
-	data.Set("events", a.eventListener.GetEvents(""))
+	data.Set("events", api.eventListener.GetEvents(""))
 
 	return c.Render(http.StatusOK, "event_log.html", data)
 }
 
 // receiveEvents receive events.
-func (a *apiClient) receiveEvents(c echo.Context) error {
-	a.eventListener.ProcessEvents(c.Request())
+func (api *apiClient) receiveEvents(c echo.Context) error {
+	api.eventListener.ProcessEvents(c.Request())
 	return c.String(http.StatusOK, "OK")
 }
 
 // purgeOldTags purges old tags.
-func (a *apiClient) purgeOldTags(dryRun bool) {
-	registry.PurgeOldTags(a.client, dryRun, a.config.PurgeTagsKeepDays, a.config.PurgeTagsKeepCount)
+func (api *apiClient) purgeOldTags(dryRun bool) {
+	registry.PurgeOldTags(api.client, dryRun, api.config.PurgeTagsKeepDays, api.config.PurgeTagsKeepCount)
 }

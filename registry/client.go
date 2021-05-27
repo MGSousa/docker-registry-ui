@@ -226,6 +226,7 @@ func (c *Client) Tags(repo string) []string {
 func (c *Client) ManifestList(repo, tag string) (string, []gjson.Result) {
 	scope := fmt.Sprintf("repository:%s:*", repo)
 	uri := fmt.Sprintf("/v2/%s/manifests/%s", repo, tag)
+
 	// If manifest.list.v2 does not exist because it's a normal image,
 	// the registry returns manifest.v1 or manifest.v2 if requested by sha256.
 	info, resp := c.callRegistry(uri, scope, "manifest.list.v2")
@@ -242,6 +243,7 @@ func (c *Client) ManifestList(repo, tag string) (string, []gjson.Result) {
 func (c *Client) TagInfo(repo, tag string, v1only bool) (string, string, string) {
 	scope := fmt.Sprintf("repository:%s:*", repo)
 	uri := fmt.Sprintf("/v2/%s/manifests/%s", repo, tag)
+
 	// Note, if manifest.v1 does not exist because the image is requested by sha256,
 	// the registry returns manifest.v2 instead or manifest.list.v2 if it's the manifest list!
 	infoV1, _ := c.callRegistry(uri, scope, "manifest.v1")
@@ -292,8 +294,10 @@ func (c *Client) CountTags(interval uint8) {
 // DeleteTag delete image tag.
 func (c *Client) DeleteTag(repo, tag string) {
 	scope := fmt.Sprintf("repository:%s:*", repo)
+
 	// Get sha256 digest for tag.
-	_, resp := c.callRegistry(fmt.Sprintf("/v2/%s/manifests/%s", repo, tag), scope, "manifest.list.v2")
+	_, resp := c.callRegistry(
+		fmt.Sprintf("/v2/%s/manifests/%s", repo, tag), scope, "manifest.list.v2")
 
 	if resp.Header.Get("Content-Type") != "application/vnd.docker.distribution.manifest.list.v2+json" {
 		_, resp = c.callRegistry(fmt.Sprintf("/v2/%s/manifests/%s", repo, tag), scope, "manifest.v2")

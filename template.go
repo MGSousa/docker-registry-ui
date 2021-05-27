@@ -17,8 +17,10 @@ type Template struct {
 	View *jet.Set
 }
 
+var version = "1.0.0"
+
 // Render render template.
-func (r *Template) Render(w io.Writer, name string, data interface{}, c echo.Context) error {
+func (r *Template) Render(w io.Writer, name string, data interface{}, _ echo.Context) error {
 	t, err := r.View.GetTemplate(name)
 	if err != nil {
 		panic(fmt.Errorf("Fatal error template file: %s", err))

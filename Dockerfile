@@ -1,5 +1,7 @@
 FROM golang:1.16.3-alpine3.13 as builder
 
+ARG VERSION
+
 RUN apk update && \
     apk add ca-certificates git bash gcc musl-dev
 
@@ -9,7 +11,7 @@ ADD registry registry
 ADD *.go go.mod go.sum ./
 
 RUN go test -v ./registry && \
-    go build -o /opt/docker-registry-ui *.go
+    go build -ldflags="-s -w -X main.version=$VERSION" -o /opt/docker-registry-ui *.go
 
 
 FROM alpine:3.13

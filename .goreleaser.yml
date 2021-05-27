@@ -1,0 +1,21 @@
+project_name: docker-registry-ui
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goarch:
+      - amd64
+    goos:
+      - linux
+      - darwin
+    ldflags:
+      - -s -w -X main.version={{.Tag}}
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+archives:
+  - format: binary
+checksum:
+  disable: true
