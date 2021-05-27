@@ -47,6 +47,7 @@ type (
 		client        *registry.Client
 		eventListener *events.EventListener
 		config        configData
+		tpl           jet.VarMap
 	}
 )
 
@@ -162,6 +163,7 @@ func (api *apiClient) execInitialTasks() {
 func (api *apiClient) initEngine() {
 	// init template engine
 	e := echo.New()
+	api.tpl = jet.VarMap{}
 	e.Renderer = setupRenderer(api.config.Debug, u.Host, api.config.BasePath)
 
 	// init web engine routes
@@ -197,13 +199,12 @@ func (api *apiClient) viewRepositories(c echo.Context) error {
 	}
 
 	repos, _ := api.client.Repositories(true)[namespace]
-	data := jet.VarMap{}
-	data.Set("namespace", namespace)
-	data.Set("namespaces", api.client.Namespaces())
-	data.Set("repos", repos)
-	data.Set("tagCounts", api.client.TagCounts())
+	api.tpl.Set("namespace", namespace)
+	api.tpl.Set("namespaces", api.client.Namespaces())
+	api.tpl.Set("repos", repos)
+	api.tpl.Set("tagCounts", api.client.TagCounts())
 
-	return c.Render(http.StatusOK, "repositories.html", data)
+	return c.Render(http.StatusOK, "repositories.html", api.tpl)
 }
 
 // viewTags
@@ -218,15 +219,14 @@ func (api *apiClient) viewTags(c echo.Context) error {
 	tags := api.client.Tags(repoPath)
 	deleteAllowed := api.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER"))
 
-	data := jet.VarMap{}
-	data.Set("namespace", namespace)
-	data.Set("repo", repo)
-	data.Set("tags", tags)
-	data.Set("deleteAllowed", deleteAllowed)
+	api.tpl.Set("namespace", namespace)
+	api.tpl.Set("repo", repo)
+	api.tpl.Set("tags", tags)
+	api.tpl.Set("deleteAllowed", deleteAllowed)
 	repoPath, _ = url.PathUnescape(repoPath)
-	data.Set("events", api.eventListener.GetEvents(repoPath))
+	api.tpl.Set("events", api.eventListener.GetEvents(repoPath))
 
-	return c.Render(http.StatusOK, "tags.html", data)
+	return c.Render(http.StatusOK, "tags.html", api.tpl)
 }
 
 // viewTagInfo view all available info from each tag
@@ -239,12 +239,36 @@ func (api *apiClient) viewTagInfo(c echo.Context) error {
 		repoPath = fmt.Sprintf("%s/%s", namespace, repo)
 	}
 
+	if !api.gatherLayers(namespace, repo, repoPath, tag) {
+		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", api.config.BasePath, namespace, repo))
+	}
+
+	// Populate template vars
+	api.tpl.Set("namespace", namespace)
+	api.tpl.Set("repo", repo)
+	api.tpl.Set("tag", tag)
+	api.tpl.Set("repoPath", repoPath)
+
+	return c.Render(http.StatusOK, "tag_info.html", api.tpl)
+}
+
+// gatherLayers
+func (api *apiClient) gatherLayers(namespace, repo string, repoPath string, tag string) bool {
+	var (
+		layersV1    []map[string]interface{}
+		layersV2    []map[string]gjson.Result
+		digestList  []map[string]interface{}
+		imageSize   int64
+		layersCount int
+	)
+
 	// Retrieve full image info from various versions of manifests
 	sha256, infoV1, infoV2 := api.client.TagInfo(repoPath, tag, false)
 	sha256list, manifests := api.client.ManifestList(repoPath, tag)
 	if (infoV1 == "" || infoV2 == "") && len(manifests) == 0 {
-		return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", api.config.BasePath, namespace, repo))
+		return false
 	}
+	api.tpl.Set("sha256", sha256)
 
 	// check if manifest has sha256 valid string
 	created := gjson.Get(gjson.Get(infoV1, "history.0.v1Compatibility").String(), "created").String()
@@ -252,24 +276,25 @@ func (api *apiClient) viewTagInfo(c echo.Context) error {
 	if len(manifests) > 0 {
 		sha256 = sha256list
 	}
+	api.tpl.Set("isDigest", isDigest)
+	api.tpl.Set("created", created)
 
 	// Gather layers v2
-	var layersV2 []map[string]gjson.Result
 	for _, s := range gjson.Get(infoV2, "layers").Array() {
 		layersV2 = append(layersV2, s.Map())
 	}
+	api.tpl.Set("layersV2", layersV2)
 
 	// Gather layers v1
-	var layersV1 []map[string]interface{}
 	for _, s := range gjson.Get(infoV1, "history.#.v1Compatibility").Array() {
 		m, _ := gjson.Parse(s.String()).Value().(map[string]interface{})
 		// Sort key in the map to show the ordered on UI.
 		m["ordered_keys"] = registry.SortedMapKeys(m)
 		layersV1 = append(layersV1, m)
 	}
+	api.tpl.Set("layersV1", layersV1)
 
 	// Count image size
-	var imageSize int64
 	if gjson.Get(infoV2, "layers").Exists() {
 		for _, s := range gjson.Get(infoV2, "layers.#.size").Array() {
 			imageSize = imageSize + s.Int()
@@ -279,15 +304,15 @@ func (api *apiClient) viewTagInfo(c echo.Context) error {
 			imageSize = imageSize + gjson.Get(s.String(), "Size").Int()
 		}
 	}
+	api.tpl.Set("imageSize", imageSize)
 
 	// Count layers
-	layersCount := len(layersV2)
-	if layersCount == 0 {
+	if layersCount = len(layersV2); layersCount == 0 {
 		layersCount = len(gjson.Get(infoV1, "fsLayers").Array())
 	}
+	api.tpl.Set("layersCount", layersCount)
 
 	// Gather sub-image info of multi-arch or cache image
-	var digestList []map[string]interface{}
 	for _, s := range manifests {
 		r, _ := gjson.Parse(s.String()).Value().(map[string]interface{})
 		if s.Get("mediaType").String() == "application/vnd.docker.distribution.manifest.v2+json" {
@@ -300,7 +325,8 @@ func (api *apiClient) viewTagInfo(c echo.Context) error {
 			r["size"] = dSize
 			// Create link here because there is a bug with jet template when referencing a value by map key in the "if" condition under "range".
 			if r["mediaType"] == "application/vnd.docker.distribution.manifest.v2+json" {
-				r["digest"] = fmt.Sprintf(`<a href="%s/%s/%s/%s">%s</a>`, api.config.BasePath, namespace, repo, r["digest"], r["digest"])
+				r["digest"] = fmt.Sprintf(
+					`<a href="%s/%s/%s/%[4]s">%[4]s</a>`, api.config.BasePath, namespace, repo, r["digest"])
 			}
 		} else {
 			// Sub-image of the cache type.
@@ -309,23 +335,8 @@ func (api *apiClient) viewTagInfo(c echo.Context) error {
 		r["ordered_keys"] = registry.SortedMapKeys(r)
 		digestList = append(digestList, r)
 	}
-
-	// Populate template vars
-	data := jet.VarMap{}
-	data.Set("namespace", namespace)
-	data.Set("repo", repo)
-	data.Set("tag", tag)
-	data.Set("repoPath", repoPath)
-	data.Set("sha256", sha256)
-	data.Set("imageSize", imageSize)
-	data.Set("created", created)
-	data.Set("layersCount", layersCount)
-	data.Set("layersV2", layersV2)
-	data.Set("layersV1", layersV1)
-	data.Set("isDigest", isDigest)
-	data.Set("digestList", digestList)
-
-	return c.Render(http.StatusOK, "tag_info.html", data)
+	api.tpl.Set("digestList", digestList)
+	return true
 }
 
 // deleteTag delete desited tag
@@ -361,10 +372,9 @@ func (api *apiClient) checkDeletePermission(user string) bool {
 
 // viewLog view events from sqlite.
 func (api *apiClient) viewLog(c echo.Context) error {
-	data := jet.VarMap{}
-	data.Set("events", api.eventListener.GetEvents(""))
+	api.tpl.Set("events", api.eventListener.GetEvents(""))
 
-	return c.Render(http.StatusOK, "event_log.html", data)
+	return c.Render(http.StatusOK, "event_log.html", api.tpl)
 }
 
 // receiveEvents receive events.

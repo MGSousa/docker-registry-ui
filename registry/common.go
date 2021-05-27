@@ -36,7 +36,7 @@ func SortedMapKeys(m interface{}) []string {
 // PrettySize format bytes in more readable units.
 func PrettySize(size float64) string {
 	var (
-		units = []string{"B", "KB", "MB", "GB"}
+		units       = []string{"B", "KB", "MB", "GB"}
 		decimals, i int
 	)
 	for size > 1024 && i < len(units) {
