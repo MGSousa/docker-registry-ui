@@ -8,14 +8,81 @@
         <link rel="stylesheet" type="text/css" href="{{ basePath }}/static/datatables.min.css"/>
         <script type="text/javascript" src="{{ basePath }}/static/datatables.min.js"></script>
         {{yield head()}}
+        <style>
+            body {
+                background: #f5f5f5;
+            }
+            nav {
+                width: 100%;
+                height: 50px;
+                position: absolute;
+                top: 0;
+                left: 0;
+                background-color: #2d383e;
+                box-shadow: 1px 2px 100px;
+            }
+            #datatable {
+                box-shadow: 1px 2px 4px #ccc;
+            }
+            #wrapper {
+                width: 100%;
+                height: 100%;
+                overflow: hidden;
+                display: block;
+            }
+            #wrapper ul {
+                width: 50%;
+                margin: 0 auto;
+                height: 100%;
+                text-align: center;
+            }
+            #wrapper li {
+                display: block;
+                float: left;
+                color: white;
+                width: 100%;
+                padding: 0 .5em;
+                line-height: 50px;
+                text-decoration: none;
+                font-size: 18px;
+            }
+            .main-link {
+                font-weight: bold;
+                padding: 10px;
+                border: 1px solid #ddd;
+                background: #f4a259;
+                color: #fff;
+                -webkit-transition: all 0.3s ease-in-out;
+                -moz-transition: all 0.3s ease-in-out;
+                -o-transition: all 0.3s ease-in-out;
+                transition: all 0.3s ease-in-out;
+            }
+            a.main-link:hover, a.main-link:focus {
+                color: #ddd !important;
+                text-decoration: none !important;
+                background: #2e383e;
+                -webkit-transition: all 0.3s ease-in-out;
+                -moz-transition: all 0.3s ease-in-out;
+                -o-transition: all 0.3s ease-in-out;
+                transition: all 0.3s ease-in-out;
+            }
+            .bg-table-header {
+                background: #ffffff;
+                color: #000;
+            }
+        </style>
     </head>
     <body>
-        <div class="container">
-            <div style="float: left">
-                <h2><a href="{{ basePath }}/" style="text-decoration: none">Docker Registry UI</a></h2>
+        <nav>
+            <div id="wrapper">
+                <ul>
+                    <li>Docker Registry UI</li>
+                </ul>
             </div>
+        </nav>
+        <div class="container" style="margin-top: 70px;">
             <div style="float: right">
-                <h4><a href="{{ basePath }}/events">Event Log</a></h4>
+                <!--<h4><a href="{{ basePath }}/events">Event Log</a></h4>-->
             </div>
             <div style="clear: both"></div>
 
@@ -23,7 +90,7 @@
 
             <div style="padding: 10px 0; margin-bottom: 20px">
                 <div style="text-align: center; color:darkgrey">
-                    Docker Registry UI v{{version}} &copy; 2017-2020 <a href="https://quiq.com">Quiq Inc.</a>
+                    Docker Registry UI v{{version}} &copy; 2017-2020 KK
                 </div>
             </div>
         </div>
