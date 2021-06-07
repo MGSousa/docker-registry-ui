@@ -29,7 +29,7 @@ The configuration is stored in `config.yml` and the options are self-descriptive
 ### Run UI
 
     docker run -d -p 8000:8000 -v /local/config.yml:/opt/config.yml:ro \
-        --name=registry-ui quiq/docker-registry-ui
+        --name=registry-ui MGSousa/docker-registry-ui
 
 To run with your own root CA certificate, add to the command:
 
