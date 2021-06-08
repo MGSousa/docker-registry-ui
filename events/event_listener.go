@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/quiq/docker-registry-ui/registry"
+	"github.com/MGSousa/docker-registry-ui/registry"
 	"github.com/sirupsen/logrus"
 
 	// 🐒 patching of "database/sql".

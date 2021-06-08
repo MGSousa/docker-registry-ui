@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/CloudyKit/jet"
+	"github.com/MGSousa/docker-registry-ui/registry"
 	"github.com/labstack/echo/v4"
-	"github.com/quiq/docker-registry-ui/registry"
 	"github.com/tidwall/gjson"
 )
 
