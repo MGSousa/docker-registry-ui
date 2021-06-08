@@ -4,16 +4,15 @@ import (
 	"flag"
 	"fmt"
 	"github.com/CloudyKit/jet"
+	"github.com/MGSousa/cron/v3"
+	"github.com/MGSousa/docker-registry-ui/events"
+	"github.com/MGSousa/docker-registry-ui/registry"
 	"github.com/jinzhu/configor"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/quiq/docker-registry-ui/events"
-	"github.com/quiq/docker-registry-ui/registry"
-	"github.com/robfig/cron"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,10 +43,12 @@ type (
 		PurgeTagsSchedule     string   `yaml:"purge_tags_schedule"`
 	}
 	apiClient struct {
-		client        *registry.Client
-		eventListener *events.EventListener
-		config        configData
-		tpl           jet.VarMap
+		client             *registry.Client
+		eventListener      *events.EventListener
+		config             configData
+		tpl                jet.VarMap
+		cron               *cron.Cron
+		purgeJob, countJob cron.EntryID
 	}
 )
 
@@ -68,8 +69,8 @@ func main() {
 	flag.Parse()
 
 	if loggingLevel != "info" {
-		if level, err := logrus.ParseLevel(loggingLevel); err == nil {
-			logrus.SetLevel(level)
+		if level, err := log.ParseLevel(loggingLevel); err == nil {
+			log.SetLevel(level)
 		}
 	}
 	// parse config file
@@ -80,8 +81,15 @@ func main() {
 		api.config.RegistryURL, api.config.VerifyTLS, api.config.Username, api.config.Password); api.client == nil {
 		log.Fatal("cannot initialize API Client or unsupported Auth method")
 	}
+
+	// Execute task to remove old tags and exit.
+	if purgeTags {
+		api.purgeOldTags(purgeDryRun)
+		return
+	}
+
 	// execute initial tasks
-	api.execInitialTasks()
+	api.execInitialTasks(false)
 
 	if api.config.EventDatabaseDriver != "sqlite3" && api.config.EventDatabaseDriver != "mysql" {
 		log.Fatal("event_database_driver should be either sqlite3 or mysql")
@@ -106,9 +114,16 @@ func (api *apiClient) parseConfig() {
 				if os.Getenv("APP_RELEASE") != "true" {
 					log.Println("Config auto-reloaded")
 				}
+
+				// update intial tasks schedule when refresh
+				api.execInitialTasks(true)
 			},
 		},
 	).Load(&api.config, configFile)
+
+	// init cron runner
+	api.cron = cron.New(
+		cron.WithChain(cron.Recover(cron.DefaultLogger)))
 
 	// Validate registry URL.
 	if u, err = url.Parse(api.config.RegistryURL); err != nil {
@@ -138,25 +153,44 @@ func (api *apiClient) parseConfig() {
 }
 
 // execInitialTasks execute or schedules initial tasks
-func (api *apiClient) execInitialTasks() {
-	// Execute CLI task and exit.
-	if purgeTags {
-		api.purgeOldTags(purgeDryRun)
-		return
-	}
-	// Schedules to purge tags.
+func (api *apiClient) execInitialTasks(update bool) {
+	defer api.cron.Start()
+
+	// Schedule to purge tags.
 	if api.config.PurgeTagsSchedule != "" {
-		c := cron.New()
-		task := func() {
-			api.purgeOldTags(purgeDryRun)
+		if update {
+			if err = api.cron.UpdateScheduleWithSpec(
+				api.purgeJob, api.config.PurgeTagsSchedule); err != nil {
+				log.WithField("task", "purge_tags").
+					Fatalf("invalid schedule format: %s", api.config.PurgeTagsSchedule)
+			}
+		} else {
+			if api.purgeJob, err = api.cron.AddFunc(api.config.PurgeTagsSchedule, func() {
+				api.purgeOldTags(purgeDryRun)
+			}); err != nil {
+				log.WithField("task", "purge_tags").
+					Fatalf("invalid schedule format: %s", api.config.PurgeTagsSchedule)
+			}
 		}
-		if err := c.AddFunc(api.config.PurgeTagsSchedule, task); err != nil {
-			log.Fatalf("Invalid schedule format: %s", api.config.PurgeTagsSchedule)
-		}
-		c.Start()
 	}
-	// Count tags in background.
-	go api.client.CountTags(api.config.CacheRefreshInterval)
+	// Schedule to register synced tags
+	if api.config.CacheRefreshInterval > 0 {
+		if update {
+			if err = api.cron.UpdateScheduleWithSpec(
+				api.countJob, fmt.Sprintf("*/%d * * * *", api.config.CacheRefreshInterval)); err != nil {
+				log.WithField("task", "purge_tags").
+					Fatalf("invalid schedule format: %s", api.config.PurgeTagsSchedule)
+			}
+		} else {
+			if api.countJob, err = api.cron.AddFunc(
+				fmt.Sprintf("*/%d * * * *", api.config.CacheRefreshInterval), func() {
+					api.client.CountTags()
+				}); err != nil {
+				log.WithField("task", "count_tags").
+					Fatalf("invalid schedule format: %s", api.config.PurgeTagsSchedule)
+			}
+		}
+	}
 }
 
 // initEngine initiate template and web engines
@@ -352,7 +386,6 @@ func (api *apiClient) deleteTag(c echo.Context) error {
 	if api.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER")) {
 		api.client.DeleteTag(repoPath, tag)
 	}
-
 	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", api.config.BasePath, namespace, repo))
 }
 

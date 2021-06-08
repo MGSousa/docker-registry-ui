@@ -63,7 +63,8 @@ func PurgeOldTags(client *Client, purgeDryRun bool, purgeTagsKeepDays, purgeTags
 					logger.Errorf("[%s] missing manifest v1 for tag %s", repo, tag)
 					continue
 				}
-				created := gjson.Get(gjson.Get(infoV1, "history.0.v1Compatibility").String(), "created").Time()
+				created := gjson.Get(
+					gjson.Get(infoV1, "history.0.v1Compatibility").String(), "created").Time()
 				repos[repo] = append(repos[repo], tagData{name: tag, created: created})
 			}
 		}

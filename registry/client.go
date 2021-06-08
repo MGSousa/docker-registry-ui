@@ -271,24 +271,21 @@ func (c *Client) TagCounts() map[string]int {
 	return c.tagCounts
 }
 
-// CountTags count repository tags in background regularly.
-func (c *Client) CountTags(interval uint8) {
-	for {
-		start := time.Now()
-		c.logger.Info("[CountTags] Calculating image tags...")
-		catalog := c.Repositories(false)
-		for n, repos := range catalog {
-			for _, r := range repos {
-				repoPath := r
-				if n != "library" {
-					repoPath = fmt.Sprintf("%s/%s", n, r)
-				}
-				c.tagCounts[fmt.Sprintf("%s/%s", n, r)] = len(c.Tags(repoPath))
+// CountTags count repository tags and updates it.
+func (c *Client) CountTags() {
+	start := time.Now()
+	c.logger.Info("[CountTags] Calculating image tags...")
+	catalog := c.Repositories(false)
+	for n, repos := range catalog {
+		for _, r := range repos {
+			repoPath := r
+			if n != "library" {
+				repoPath = fmt.Sprintf("%s/%s", n, r)
 			}
+			c.tagCounts[fmt.Sprintf("%s/%s", n, r)] = len(c.Tags(repoPath))
 		}
-		c.logger.Infof("[CountTags] Job complete (%v).", time.Now().Sub(start))
-		time.Sleep(time.Duration(interval) * time.Minute)
 	}
+	c.logger.Infof("[CountTags] Job complete (%v).", time.Now().Sub(start))
 }
 
 // DeleteTag delete image tag.

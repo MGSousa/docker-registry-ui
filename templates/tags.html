@@ -5,12 +5,19 @@
 <script type="text/javascript" src="{{ basePath }}/static/sorting_natural.js"></script>
 <script type="text/javascript">
     $(document).ready(function() {
+        $('tr').hover(function() {
+            $('a', this).css('color', '#ddd');
+        }, function() {
+            $('a', this).css('color', '#000');
+            $('.del-tag').css('color', '#fff');
+        });
+
         $('#datatable').DataTable({
             "pageLength": 10,
             "order": [[ 0, 'desc' ]],
             "stateSave": true,
             columnDefs: [
-              { type: 'natural', targets: 0 }
+                { type: 'natural', targets: 0 }
             ],
             "language": {
                 "emptyTable": "No tags in this repository."
@@ -49,7 +56,10 @@
             <td>
                 <a href="{{ basePath }}/{{ namespace }}/{{ repo }}/{{ tag }}">{{ tag }}</a>
                 {{if deleteAllowed}}
-                <a href="{{ basePath }}/{{ namespace }}/{{ repo }}/{{ tag }}/delete" data-toggle="confirmation" class="btn btn-danger btn-xs pull-right" role="button">Delete</a>
+                <a href="{{ basePath }}/{{ namespace }}/{{ repo }}/{{ tag }}/delete"
+                   data-toggle="confirmation" class="btn btn-danger btn-xs pull-right" role="button">
+                    <span class="del-tag">Delete</span>
+                </a>
                 {{end}}
             </td>
         </tr>
