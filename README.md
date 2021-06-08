@@ -20,7 +20,7 @@
 No TLS or authentication implemented on the UI web server itself.
 Assuming you will proxy it behind nginx, oauth2_proxy or something.
 
-Docker images [quiq/docker-registry-ui](https://hub.docker.com/r/quiq/docker-registry-ui/tags/)
+Docker images [MGSousa/docker-registry-ui](https://hub.docker.com/r/mgsousa/docker-registry-ui/tags/)
 
 ### Configuration
 
@@ -29,7 +29,7 @@ The configuration is stored in `config.yml` and the options are self-descriptive
 ### Run UI
 
     docker run -d -p 8000:8000 -v /local/config.yml:/opt/config.yml:ro \
-        --name=registry-ui MGSousa/docker-registry-ui
+        --name=registry-ui mgsousa/docker-registry-ui
 
 To run with your own root CA certificate, add to the command:
 
