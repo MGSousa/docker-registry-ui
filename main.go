@@ -73,14 +73,8 @@ func main() {
 			log.SetLevel(level)
 		}
 	}
-	// parse config file
-	api.parseConfig()
-
-	// Init registry API client.
-	if api.client = registry.NewClient(
-		api.config.RegistryURL, api.config.VerifyTLS, api.config.Username, api.config.Password); api.client == nil {
-		log.Fatal("cannot initialize API Client or unsupported Auth method")
-	}
+	// register configs to multiple services
+	api.registerConfigs()
 
 	// Execute task to remove old tags and exit.
 	if purgeTags {
@@ -101,8 +95,9 @@ func main() {
 	api.initEngine()
 }
 
-// parseConfig read and parse config file and respective opts
-func (api *apiClient) parseConfig() {
+// registerConfigs read and parse config file
+// assign config opts to cron runner and to registry
+func (api *apiClient) registerConfigs() {
 	if _, err := os.Stat(configFile); os.IsNotExist(err) {
 		log.Fatal(err)
 	}
@@ -149,6 +144,12 @@ func (api *apiClient) parseConfig() {
 			panic(err)
 		}
 		api.config.Password = strings.TrimSuffix(string(passwordBytes[:]), "\n")
+	}
+
+	// Init registry API client.
+	if api.client = registry.NewClient(
+		api.config.RegistryURL, api.config.VerifyTLS, api.config.Username, api.config.Password); api.client == nil {
+		log.Fatal("cannot initialize API Client or unsupported Auth method")
 	}
 }
 
