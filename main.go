@@ -211,8 +211,9 @@ func (api *apiClient) initEngine() {
 	e.GET(api.config.BasePath+"/:namespace", api.viewRepositories)
 	e.GET(api.config.BasePath+"/:namespace/:repo", api.viewTags)
 	e.GET(api.config.BasePath+"/:namespace/:repo/:tag", api.viewTagInfo)
-	e.GET(api.config.BasePath+"/:namespace/:repo/:tag/delete", api.deleteTag)
 	e.GET(api.config.BasePath+"/events", api.viewLog)
+
+	e.DELETE(api.config.BasePath+"/:namespace/:repo/:tag/delete", api.deleteTag)
 
 	// protected event listener
 	p := e.Group(api.config.BasePath + "/api")
@@ -374,8 +375,8 @@ func (api *apiClient) gatherLayers(namespace, repo string, repoPath string, tag 
 	return true
 }
 
-// deleteTag delete desited tag
-func (api *apiClient) deleteTag(c echo.Context) error {
+// deleteTag delete desired tag from specific repo
+func (api *apiClient) deleteTag(c echo.Context) (err error) {
 	namespace := c.Param("namespace")
 	repo := c.Param("repo")
 	tag := c.Param("tag")
@@ -387,7 +388,7 @@ func (api *apiClient) deleteTag(c echo.Context) error {
 	if api.checkDeletePermission(c.Request().Header.Get("X-WEBAUTH-USER")) {
 		api.client.DeleteTag(repoPath, tag)
 	}
-	return c.Redirect(http.StatusSeeOther, fmt.Sprintf("%s/%s/%s", api.config.BasePath, namespace, repo))
+	return
 }
 
 // checkDeletePermission check if tag deletion is allowed whether by anyone or permitted users.
